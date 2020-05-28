@@ -12,15 +12,17 @@
 
 __docformat__ = 'restructuredtext'
 
-import sys
+import BaseHTTPServer
 import os
+import re
+import subprocess
+import sys
+import threading
+import webbrowser
+
 import cocos
 from MultiLanguage import MultiLanguage
-import BaseHTTPServer
-import webbrowser
-import threading
-import subprocess
-import re
+
 
 class CCPluginRun(cocos.CCPlugin):
     """
@@ -56,6 +58,10 @@ class CCPluginRun(cocos.CCPlugin):
                           help=MultiLanguage.get_string('RUN_ARG_NO_CONSOLE'))
         group.add_argument("--working-dir", dest="working_dir", default='',
                           help=MultiLanguage.get_string('RUN_ARG_WORKING_DIR'))
+        group.add_argument("--target-all-devices", action="store_true", dest="target_all_devices", default=True,
+                           help=MultiLanguage.get_string('RUN_ARG_WORKING_DIR'))
+        group.add_argument("--target-device", dest="target_device",
+                           help=MultiLanguage.get_string('RUN_ARG_WORKING_DIR'))
 
         group = parser.add_argument_group(MultiLanguage.get_string('RUN_ARG_GROUP_IOS'))
         group.add_argument("-sdk", dest="use_sdk", metavar="USE_SDK", nargs='?', default='iphonesimulator',
@@ -69,6 +75,8 @@ class CCPluginRun(cocos.CCPlugin):
         self._param = args.param
         self._no_console = args.no_console
         self._working_dir = args.working_dir
+        self._target_all_devices = args.target_all_devices
+        self._target_device = args.target_device
 
     def get_ios_sim_name(self):
         # get the version of xcodebuild
@@ -230,6 +238,28 @@ class CCPluginRun(cocos.CCPlugin):
         launch_macapp = '\"%s/Contents/MacOS/%s\"' % (deploy_dep._macapp_path, deploy_dep.target_name)
         self._run_with_desktop_options(launch_macapp)
 
+    def _get_android_device_id(self):
+        if not self._target_all_devices:
+            if self._target_device:
+                return (self._target_device, )
+            else:
+                return ('', )
+        sdk_root = cocos.check_environment_variable('ANDROID_SDK_ROOT')
+        adb_path = cocos.CMDRunner.convert_path_to_cmd(os.path.join(sdk_root, 'platform-tools', 'adb'))
+
+        adb_devices_output = self._output_for('%s devices -l' % (adb_path, ))
+        devices = []
+        for line in adb_devices_output.split(os.linesep):
+            if line.startswith('List of devices'):
+                continue
+            if ' device ' in line:
+                device = line.split(' ')[0]
+                devices.append(device)
+        if len(devices) > 0:
+            return devices
+        else:
+            return ('',)
+
     def run_android_device(self, dependencies):
         if not self._platforms.is_android_active():
             return
@@ -237,9 +267,17 @@ class CCPluginRun(cocos.CCPlugin):
         sdk_root = cocos.check_environment_variable('ANDROID_SDK_ROOT')
         adb_path = cocos.CMDRunner.convert_path_to_cmd(os.path.join(sdk_root, 'platform-tools', 'adb'))
         deploy_dep = dependencies['deploy']
-        startapp = "%s shell am start -n \"%s/%s\"" % (adb_path, deploy_dep.package, deploy_dep.activity)
-        self._run_cmd(startapp)
-        pass
+
+        devices = self._get_android_device_id()
+        for s_arg in devices:
+            s_arg = ' -s %s' % str(s_arg) if s_arg else ''
+            start_app = "%s %s shell am start -n \"%s/%s\"" % (adb_path, s_arg, deploy_dep.package, deploy_dep.activity)
+            self._run_cmd(start_app)
+            wake_device = "%s %s shell input keyevent KEYCODE_WAKEUP" % (adb_path, s_arg)
+            self._run_cmd(wake_device)
+            wake_device = "%s %s shell input keyevent 82" % (adb_path, s_arg)
+            self._run_cmd(wake_device)
+
 
     def open_webbrowser(self, url):
         if self._browser is None:

@@ -39,6 +39,10 @@ class CCPluginDeploy(cocos.CCPlugin):
                           help=MultiLanguage.get_string('DEPLOY_ARG_MODE'))
         parser.add_argument("--no-uninstall", dest="no_uninstall", action="store_true",
                           help=MultiLanguage.get_string('DEPLOY_ARG_NO_UNINSTALL'))
+        parser.add_argument("--target-all-devices", action="store_true", dest="target_all_devices", default=True,
+                            help=MultiLanguage.get_string('RUN_ARG_WORKING_DIR'))
+        parser.add_argument("--target-device", dest="target_device",
+                            help=MultiLanguage.get_string('RUN_ARG_WORKING_DIR'))
 
     def _check_custom_options(self, args):
 
@@ -50,6 +54,9 @@ class CCPluginDeploy(cocos.CCPlugin):
             self._mode = args.mode
 
         self._no_uninstall = args.no_uninstall
+
+        self._target_device = args.target_device
+        self._target_all_devices = args.target_all_devices
 
     def _is_debug_mode(self):
         return self._mode == 'debug'
@@ -147,6 +154,28 @@ class CCPluginDeploy(cocos.CCPlugin):
         self.run_root = compile_dep.run_root
         self.project_name = compile_dep.project_name
 
+    def _get_android_device_id(self):
+        if not self._target_all_devices:
+            if self._target_device:
+                return (self._target_device, )
+            else:
+                return ('', )
+        sdk_root = cocos.check_environment_variable('ANDROID_SDK_ROOT')
+        adb_path = cocos.CMDRunner.convert_path_to_cmd(os.path.join(sdk_root, 'platform-tools', 'adb'))
+
+        adb_devices_output = self._output_for('%s devices -l' % (adb_path, ))
+        devices = []
+        for line in adb_devices_output.split(os.linesep):
+            if line.startswith('List of devices'):
+                continue
+            if ' device ' in line:
+                device = line.split(' ')[0]
+                devices.append(device)
+        if len(devices) > 0:
+            return devices
+        else:
+            return ('',)
+
     def deploy_android(self, dependencies):
         if not self._platforms.is_android_active():
             return
@@ -160,14 +189,18 @@ class CCPluginDeploy(cocos.CCPlugin):
         sdk_root = cocos.check_environment_variable('ANDROID_SDK_ROOT')
         adb_path = cocos.CMDRunner.convert_path_to_cmd(os.path.join(sdk_root, 'platform-tools', 'adb'))
 
-        if not self._no_uninstall:
-            # do uninstall only when that app is installed
-            if cocos.app_is_installed(adb_path, self.package):
-                adb_uninstall = "%s uninstall %s" % (adb_path, self.package)
-                self._run_cmd(adb_uninstall)
+        devices = self._get_android_device_id()
+        for device in devices:
+            s_arg = ' -s %s' % str(device) if device else ''
 
-        adb_install = "%s install -r \"%s\"" % (adb_path, apk_path)
-        self._run_cmd(adb_install)
+            if not self._no_uninstall:
+                # do uninstall only when that app is installed
+                if cocos.app_is_installed(adb_path, self.package):
+                    adb_uninstall = "%s %s uninstall %s" % (adb_path, s_arg, self.package)
+                    self._run_cmd(adb_uninstall)
+
+            adb_install = "%s %s install -r \"%s\"" % (adb_path, s_arg, apk_path)
+            self._run_cmd(adb_install)
 
     def get_filename_by_extention(self, ext, path):
         filelist = os.listdir(path)
